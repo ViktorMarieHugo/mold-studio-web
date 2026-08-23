@@ -14,7 +14,7 @@ col1, col2 = st.columns([1, 2])
 
 with col1:
     st.subheader("Настройки формы")
-    uploaded_file = st.file_uploader("Загрузите мастер-модель", type=["stl"])
+    uploaded_file = st.file_uploader("Загрузите мастер-модель", type=["stl", "3mf"])
     
     st.markdown("---")
     scale_option = st.radio(
