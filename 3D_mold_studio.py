@@ -1,6 +1,5 @@
 import streamlit as st
 import trimesh
-import numpy as np
 import tempfile
 import os
 
@@ -13,9 +12,15 @@ with col1:
     st.subheader("Настройки формы")
     uploaded_file = st.file_uploader("Загрузите мастер-модель", type=["stl"])
     
-    wall_thickness = st.slider("Толщина стенок формы (мм)", min_value=2, max_value=15, value=5, step=1)
+    st.markdown("---")
+    scale_option = st.radio(
+        "Масштаб исходной модели (если загрузилась слишком маленькой)",
+        [1.0, 10.0, 25.4],
+        format_func=lambda x: "Без изменений (x1)" if x == 1.0 else ("Из Сантиметров в Миллиметры (x10)" if x == 10.0 else "Из Дюймов в Миллиметры (x25.4)")
+    )
+    st.markdown("---")
     
-    # Ползунок для отступа снизу (чтобы модель не провалилась насквозь)
+    wall_thickness = st.slider("Толщина стенок формы (мм)", min_value=2, max_value=15, value=5, step=1)
     bottom_offset = st.slider("Толщина дна молда (мм)", min_value=1, max_value=10, value=3, step=1)
 
 with col2:
@@ -24,60 +29,62 @@ with col2:
     if uploaded_file is not None:
         st.success(f"Файл '{uploaded_file.name}' загружен!")
         
-        if st.button("Сгенерировать базовый блок", type="primary"):
-            with st.spinner("Анализ геометрии..."):
+        if st.button("Сгенерировать молд (Вычитание)", type="primary"):
+            with st.spinner("Анализ геометрии и булево вычитание (может занять время)..."):
                 
-                # 1. Сохраняем загруженный файл во временную папку, чтобы trimesh мог его прочитать
+                # Сохраняем файл во временную папку
                 with tempfile.NamedTemporaryFile(delete=False, suffix='.stl') as tmp_file:
                     tmp_file.write(uploaded_file.getvalue())
                     tmp_file_path = tmp_file.name
                 
                 try:
-                    # 2. Загружаем модель через trimesh
+                    # Загружаем модель
                     mesh = trimesh.load(tmp_file_path)
                     
-                    # Проверяем, что загрузился именно меш (иногда файлы могут быть сломаны)
                     if not isinstance(mesh, trimesh.Trimesh):
                          st.error("Ошибка: Файл не является корректным 3D-мешем.")
                          st.stop()
+                    
+                    # Применяем масштаб, если нужно
+                    if scale_option != 1.0:
+                        mesh.apply_scale(scale_option)
                          
-                    # 3. Узнаем габариты загруженной модели (bounding box)
-                    extents = mesh.extents # Размеры по X, Y, Z
-                    bounds = mesh.bounds   # Координаты минимальной и максимальной точек
+                    extents = mesh.extents 
+                    bounds = mesh.bounds   
                     
-                    st.write(f"**Размеры вашей модели (X, Y, Z):** {extents[0]:.1f} x {extents[1]:.1f} x {extents[2]:.1f} мм")
+                    st.write(f"**Актуальные размеры модели (X, Y, Z):** {extents[0]:.1f} x {extents[1]:.1f} x {extents[2]:.1f} мм")
                     
-                    # 4. Рассчитываем размеры коробки-опалубки
-                    # Ширина и длина = размер модели + толщина стенок с двух сторон
+                    # 1. Задаем размеры коробки
                     box_x = extents[0] + (wall_thickness * 2)
                     box_y = extents[1] + (wall_thickness * 2)
-                    # Высота = высота модели + толщина дна
                     box_z = extents[2] + bottom_offset
                     
-                    st.write(f"**Размер генерируемого блока:** {box_x:.1f} x {box_y:.1f} x {box_z:.1f} мм")
-                    
-                    # 5. Создаем 3D-куб (опалубку)
                     mold_box = trimesh.creation.box(extents=[box_x, box_y, box_z])
                     
-                    # Перемещаем куб так, чтобы его дно было ровно под моделью
-                    # (выравнивание центров)
-                    center_offset = mesh.centroid - mold_box.centroid
-                    center_offset[2] = bounds[0][2] - (box_z / 2) + bottom_offset # Корректируем по Z (высоте)
-                    mold_box.apply_translation(center_offset)
+                    # 2. Исправленное выравнивание
+                    # Находим правильный геометрический центр для коробки, 
+                    # чтобы она полностью накрыла деталь со всех сторон.
+                    correct_center = [
+                        (bounds[0][0] + bounds[1][0]) / 2,         # Ровно по центру X
+                        (bounds[0][1] + bounds[1][1]) / 2,         # Ровно по центру Y
+                        bounds[0][2] - bottom_offset + (box_z / 2) # Исправленная высота Z
+                    ]
                     
-                    # --- Здесь в будущем будет булево вычитание ---
-                    # result_mesh = mold_box.difference(mesh) 
+                    # Двигаем коробку в нужную точку
+                    mold_box.apply_translation(correct_center)
                     
-                    st.success("Блок-опалубка успешно просчитана!")
+                    # 3. Настоящее вычитание
+                    final_mold = trimesh.boolean.difference([mold_box, mesh], engine='manifold')
                     
-                    # Для проверки пока даем скачать просто сгенерированную коробку
-                    # Экспортируем меш коробки в байты
-                    box_data = mold_box.export(file_type='stl')
+                    st.success("Форма с полостью успешно просчитана!")
+                    
+                    # Экспортируем готовый результат
+                    final_data = final_mold.export(file_type='stl')
                     
                     st.download_button(
-                        label="Скачать тестовый блок (STL)",
-                        data=box_data,
-                        file_name="test_mold_box.stl",
+                        label="Скачать цельный молд (STL)",
+                        data=final_data,
+                        file_name="mold_with_cavity.stl",
                         mime="model/stl"
                     )
 
@@ -85,7 +92,7 @@ with col2:
                     st.error(f"Произошла ошибка при обработке: {e}")
                 
                 finally:
-                    # Удаляем временный файл, чтобы не засорять память
+                    # Удаляем временный файл
                     os.remove(tmp_file_path)
     else:
         st.info("👈 Загрузите мастер-модель в меню слева.")
