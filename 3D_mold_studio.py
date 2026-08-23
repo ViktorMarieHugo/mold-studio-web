@@ -6,6 +6,10 @@ import os
 st.set_page_config(page_title="Генератор молдов", layout="wide")
 st.title("🧱 Генератор силиконовых форм (Молдов)")
 
+# --- ДОБАВЛЕНА ВЕРСИЯ И ДАТА ---
+st.caption("Версия 1.1 | Обновлено: 23 августа 2026 г.") 
+st.markdown("---") # Добавим красивую разделительную линию
+
 col1, col2 = st.columns([1, 2])
 
 with col1:
