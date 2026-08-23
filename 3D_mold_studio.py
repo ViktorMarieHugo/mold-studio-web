@@ -36,11 +36,13 @@ with col2:
         if st.button("Сгенерировать молд (Вычитание)", type="primary"):
             with st.spinner("Анализ геометрии и булево вычитание (может занять время)..."):
                 
-                # Сохраняем файл во временную папку
-                with tempfile.NamedTemporaryFile(delete=False, suffix='.stl') as tmp_file:
+               # Определяем, какое расширение у загруженного файла (.stl или .3mf)
+                file_extension = os.path.splitext(uploaded_file.name)[1].lower()
+                
+                # Сохраняем файл во временную папку с правильным расширением
+                with tempfile.NamedTemporaryFile(delete=False, suffix=file_extension) as tmp_file:
                     tmp_file.write(uploaded_file.getvalue())
                     tmp_file_path = tmp_file.name
-                
                 try:
                     # Загружаем модель
                     mesh = trimesh.load(tmp_file_path)
