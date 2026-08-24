@@ -44,22 +44,22 @@ with col2:
                     tmp_file_path = tmp_file.name
                 
                 try:
-                    mesh = trimesh.load(tmp_file_path)
+                    # Загружаем файл
+                    loaded_data = trimesh.load(tmp_file_path)
                     
-                    if isinstance(mesh, trimesh.Scene):
-                        # Правильный современный метод склейки для 3MF
-                        geom = mesh.to_geometry()
-                        mesh = trimesh.util.concatenate(tuple(geom.values()))
+                    # ПРИНУДИТЕЛЬНО делаем из него одну цельную модель
+                    if isinstance(loaded_data, trimesh.Scene):
+                        # Если это сцена (часто бывает в 3MF), склеиваем всё, что там есть
+                        mesh = loaded_data.dump(concatenate=True) 
+                    else:
+                        # Если это уже одиночная модель (STL)
+                        mesh = loaded_data
                     
                     if not isinstance(mesh, trimesh.Trimesh):
                         st.error("Ошибка: Файл не содержит корректную 3D-геометрию.")
                         st.stop()
 
-                    if not mesh.is_watertight:
-                        st.warning("⚠️ Внимание: В загруженной модели найдены дыры или открытые грани. Булево вычитание может завершиться с ошибкой. Рекомендуем сначала «Починить модель» в слайсере (например, в Bambu Studio).")
-                    
-                    if scale_option != 1.0:
-                        mesh.apply_scale(scale_option)
+                    # ПРОВЕРКА НА ГЕРМЕТИЧНОСТЬ (ДЫРЫ В СЕТКЕ)
                          
                     extents = mesh.extents 
                     
