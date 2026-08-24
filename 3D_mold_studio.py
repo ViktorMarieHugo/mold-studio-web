@@ -2,105 +2,136 @@ import streamlit as st
 import trimesh
 import tempfile
 import os
+import math
+import zipfile
+import io
 
 st.set_page_config(page_title="Генератор молдов", layout="wide")
 st.title("🧱 Генератор силиконовых форм (Молдов)")
 
-# Версия и дата обновления
-st.caption("Версия 1.3 (Стабильная геометрия) | Обновлено: 23 августа 2026 г.")
+st.caption("Версия 2.1 (Два режима: цельный и из 2 половинок) | Обновлено: 23 августа 2026 г.")
 st.markdown("---")
 
 col1, col2 = st.columns([1, 2])
 
 with col1:
     st.subheader("Настройки формы")
-    
     uploaded_file = st.file_uploader("Загрузите мастер-модель", type=["stl", "3mf"])
     
     st.markdown("---")
-    scale_option = st.radio(
-        "Масштаб (для 3MF обычно не требуется)",
-        [1.0, 10.0, 25.4],
-        format_func=lambda x: "Без изменений (x1)" if x == 1.0 else ("Из Сантиметров в Миллиметры (x10)" if x == 10.0 else "Из Дюймов в Миллиметры (x25.4)")
+    mold_type = st.radio(
+        "Конструкция молда:",
+        ["Цельный цилиндр (для резки с замками в слайсере)", 
+         "Разрезать на 2 половинки (для стяжки струбцинами)"]
     )
     st.markdown("---")
     
-    wall_thickness = st.slider("Толщина стенок формы (мм)", min_value=2, max_value=15, value=5, step=1)
+    scale_option = st.radio(
+        "Масштаб",
+        [1.0, 10.0, 25.4],
+        format_func=lambda x: "Без изменений (x1)" if x == 1.0 else ("Из Сантиметров (x10)" if x == 10.0 else "Из Дюймов (x25.4)")
+    )
+    st.markdown("---")
+    
+    wall_thickness = st.slider("Толщина стенок цилиндра (мм)", min_value=2, max_value=15, value=5, step=1)
     bottom_offset = st.slider("Толщина дна молда (мм)", min_value=1, max_value=10, value=3, step=1)
+    sprue_diam = st.slider("Диаметр отверстия для заливки (мм)", min_value=0, max_value=20, value=8, step=1)
 
 with col2:
     st.subheader("Обработка и результат")
     
     if uploaded_file is not None:
-        st.success(f"Файл '{uploaded_file.name}' загружен!")
-        
-        if st.button("Сгенерировать молд (Вычитание)", type="primary"):
-            with st.spinner("Анализ геометрии и булево вычитание..."):
+        if st.button("Сгенерировать молд", type="primary"):
+            with st.spinner("Создание формы и математические расчеты (это может занять минутку)..."):
                 
                 file_extension = os.path.splitext(uploaded_file.name)[1].lower()
-                
                 with tempfile.NamedTemporaryFile(delete=False, suffix=file_extension) as tmp_file:
                     tmp_file.write(uploaded_file.getvalue())
                     tmp_file_path = tmp_file.name
                 
                 try:
-                    # Загружаем файл
                     loaded_data = trimesh.load(tmp_file_path)
                     
-                    # ПРИНУДИТЕЛЬНО делаем из него одну цельную модель
                     if isinstance(loaded_data, trimesh.Scene):
-                        # Если это сцена (часто бывает в 3MF), склеиваем всё, что там есть
-                        mesh = loaded_data.dump(concatenate=True) 
+                        mesh = loaded_data.dump(concatenate=True)
                     else:
-                        # Если это уже одиночная модель (STL)
                         mesh = loaded_data
                     
-                    if not isinstance(mesh, trimesh.Trimesh):
-                        st.error("Ошибка: Файл не содержит корректную 3D-геометрию.")
-                        st.stop()
-
-                    # ПРОВЕРКА НА ГЕРМЕТИЧНОСТЬ (ДЫРЫ В СЕТКЕ)
+                    if scale_option != 1.0:
+                        mesh.apply_scale(scale_option)
                          
                     extents = mesh.extents 
+                    st.write(f"**Размеры мастер-модели (X, Y, Z):** {extents[0]:.1f} x {extents[1]:.1f} x {extents[2]:.1f} мм")
                     
-                    st.write(f"**Актуальные размеры модели (X, Y, Z):** {extents[0]:.1f} x {extents[1]:.1f} x {extents[2]:.1f} мм")
-                    
+                    # 1. Центрируем модель
                     bounds_center = (mesh.bounds[0] + mesh.bounds[1]) / 2.0
                     mesh.apply_translation(-bounds_center)
                     
-                    box_x = extents[0] + (wall_thickness * 2)
-                    box_y = extents[1] + (wall_thickness * 2)
-                    box_z = extents[2] + bottom_offset
-                    mold_box = trimesh.creation.box(extents=[box_x, box_y, box_z])
+                    # 2. Создаем цилиндрическую опалубку
+                    radius = math.sqrt((extents[0]/2)**2 + (extents[1]/2)**2) + wall_thickness
+                    height = extents[2] + bottom_offset + 3.0 
                     
-                    mold_box.apply_translation([0, 0, -bottom_offset / 2])
-                    mesh.apply_translation([0, 0, 0.05])
+                    mold_cylinder = trimesh.creation.cylinder(radius=radius, height=height)
+                    mold_cylinder.apply_translation([0, 0, -bottom_offset / 2 + 1.5])
                     
-                    try:
-                        final_mold = trimesh.boolean.difference([mold_box, mesh], engine='manifold')
-                    except Exception as boolean_error:
-                        st.error(f"❌ Критическая ошибка при вычитании: модель имеет сложную негерметичную геометрию. Пожалуйста, прогоните файл через функцию восстановления (Repair/Fix) в слайсере перед загрузкой.")
-                        st.stop()
-                    
-                    if abs(final_mold.volume - mold_box.volume) < 0.1:
-                        st.error("⚠️ Булево вычитание не смогло вырезать полость. Сетка модели сломана.")
+                    # 3. Литник (канал для заливки)
+                    if sprue_diam > 0:
+                        sprue = trimesh.creation.cylinder(radius=sprue_diam/2.0, height=extents[2] + 20)
+                        sprue.apply_translation([0, 0, extents[2]/2 + 5])
+                        mesh_to_subtract = trimesh.boolean.union([mesh, sprue], engine='manifold')
                     else:
-                        st.success("✅ Молд с полостью успешно создан!")
+                        mesh_to_subtract = mesh
                     
-                    final_data = final_mold.export(file_type='stl')
+                    mesh_to_subtract.apply_translation([0, 0, 0.05])
                     
-                    st.download_button(
-                        label="Скачать молд (STL)",
-                        data=final_data,
-                        file_name="mold_with_cavity.stl",
-                        mime="model/stl"
-                    )
+                    # 4. Вырезаем модель из цилиндра
+                    final_mold = trimesh.boolean.difference([mold_cylinder, mesh_to_subtract], engine='manifold')
+                    
+                    # 5. Проверяем режим: резать или не резать
+                    if "Разрезать на 2 половинки" in mold_type:
+                        st.info("Выполняется разрез формы ровно пополам...")
+                        
+                        # Создаем гигантские кубы для отсечения левой и правой части
+                        max_dim = height + radius * 2 + 50
+                        
+                        right_box = trimesh.creation.box(extents=[max_dim, max_dim, max_dim])
+                        right_box.apply_translation([max_dim/2.0, 0, 0])
+                        
+                        left_box = trimesh.creation.box(extents=[max_dim, max_dim, max_dim])
+                        left_box.apply_translation([-max_dim/2.0, 0, 0])
+                        
+                        # Пересекаем молд с левым и правым кубом
+                        part_right = trimesh.boolean.intersection([final_mold, right_box], engine='manifold')
+                        part_left = trimesh.boolean.intersection([final_mold, left_box], engine='manifold')
+                        
+                        st.success("✅ Молд успешно разрезан на 2 половинки!")
+                        
+                        # Запаковываем обе половинки в один ZIP-архив
+                        zip_buffer = io.BytesIO()
+                        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+                            zip_file.writestr("mold_left_side.stl", part_left.export(file_type='stl'))
+                            zip_file.writestr("mold_right_side.stl", part_right.export(file_type='stl'))
+                        
+                        st.download_button(
+                            label="Скачать половинки (ZIP-архив)",
+                            data=zip_buffer.getvalue(),
+                            file_name="mold_2_parts.zip",
+                            mime="application/zip"
+                        )
+                    else:
+                        st.success("✅ Цельный цилиндрический молд успешно создан!")
+                        
+                        final_data = final_mold.export(file_type='stl')
+                        st.download_button(
+                            label="Скачать цельный молд (STL)",
+                            data=final_data,
+                            file_name="mold_solid.stl",
+                            mime="model/stl"
+                        )
 
                 except Exception as e:
-                    st.error(f"Произошла непредвиденная ошибка: {e}")
+                    st.error(f"Произошла ошибка при вычислениях: {e}")
                 
                 finally:
                     if os.path.exists(tmp_file_path):
                         os.remove(tmp_file_path)
-    else:
-        st.info("👈 Загрузите модель (.stl или .3mf) в меню слева.")
