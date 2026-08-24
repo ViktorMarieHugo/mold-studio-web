@@ -8,7 +8,7 @@ import io
 st.set_page_config(page_title="Генератор молдов", layout="wide")
 st.title("🧱 Генератор силиконовых форм (Молдов)")
 
-st.caption("Версия 4.0 (Крепления по швам + Защита от дыр) | Обновлено: 23 августа 2026 г.")
+st.caption("Версия 5.0 (Умный литник + Блоки по швам) | Обновлено: 23 августа 2026 г.")
 st.markdown("---")
 
 col1, col2 = st.columns([1, 2])
@@ -41,7 +41,7 @@ with col2:
     
     if uploaded_file is not None:
         if st.button("Сгенерировать молд", type="primary"):
-            with st.spinner("Создание умной оболочки и блоков крепления..."):
+            with st.spinner("Анализ высот и расстановка креплений..."):
                 
                 file_extension = os.path.splitext(uploaded_file.name)[1].lower()
                 with tempfile.NamedTemporaryFile(delete=False, suffix=file_extension) as tmp_file:
@@ -67,23 +67,21 @@ with col2:
                     mesh.apply_translation(-bounds_center)
                     
                     raccoon_z_min = -extents[2]/2.0
-                    raccoon_z_max = extents[2]/2.0
                     mold_z_min = raccoon_z_min - bottom_offset
                     
                     # 2. Создаем "ком глины" (Convex Hull)
                     blob_mold = mesh.convex_hull
                     
-                    # 3. ИДЕАЛЬНОЕ МАСШТАБИРОВАНИЕ (Фикс дырки на хвосте)
+                    # 3. Масштабируем скорлупу
                     blob_center = (blob_mold.bounds[0] + blob_mold.bounds[1]) / 2.0
-                    blob_mold.apply_translation(-blob_center) # Центрируем саму оболочку
+                    blob_mold.apply_translation(-blob_center) 
                     
-                    # Добавляем 2 мм страховочного запаса, чтобы острые концы точно скрылись
                     sx = (blob_mold.extents[0] + wall_thickness * 2.0 + 2.0) / blob_mold.extents[0]
                     sy = (blob_mold.extents[1] + wall_thickness * 2.0 + 2.0) / blob_mold.extents[1]
                     sz = (blob_mold.extents[2] + wall_thickness * 2.0 + bottom_offset + 2.0) / blob_mold.extents[2]
                     blob_mold.apply_scale([sx, sy, sz])
                     
-                    blob_mold.apply_translation(blob_center) # Возвращаем на место
+                    blob_mold.apply_translation(blob_center)
                     
                     # 4. Срезаем низ для ровного дна
                     max_dim = max(extents) * 3
@@ -91,50 +89,60 @@ with col2:
                     cut_box.apply_translation([0, 0, mold_z_min + max_dim/2.0])
                     mold_base = trimesh.boolean.intersection([blob_mold, cut_box], engine='manifold')
                     
-                    # 5. КУБИКИ ДЛЯ СТРУБЦИН (Прямо по линии разреза)
+                    # 5. КУБИКИ ДЛЯ СТРУБЦИН (Строго вдоль шва X=0)
                     m_bounds = mold_base.bounds
                     m_y_min, m_y_max = m_bounds[0][1], m_bounds[1][1]
                     m_z_min, m_z_max = m_bounds[0][2], m_bounds[1][2]
                     
-                    block_w = 30.0 # По 15 мм выступа на каждую половинку
-                    block_l = 20.0 # Длина блока вдоль шва
-                    block_h = 16.0 # Высота блока
+                    block_w = 30.0 # Ширина (по 15 мм на каждую половину)
+                    block_l = 25.0 # Длина (глубоко врезаем в форму)
+                    block_h = 20.0 # Высота
                     
                     blocks = []
                     
-                    # Блок спереди (нос)
-                    b_front = trimesh.creation.box(extents=[block_w, block_l, block_h])
-                    b_front.apply_translation([0, m_y_max - block_l/2.0, (m_z_max + m_z_min)/2.0])
-                    blocks.append(b_front)
+                    # Распределяем по высоте: 25% и 75%
+                    z_low = m_z_min + (m_z_max - m_z_min) * 0.25
+                    z_high = m_z_min + (m_z_max - m_z_min) * 0.75
                     
-                    # Блок сзади (хвост)
-                    b_back = trimesh.creation.box(extents=[block_w, block_l, block_h])
-                    b_back.apply_translation([0, m_y_min + block_l/2.0, (m_z_max + m_z_min)/2.0])
-                    blocks.append(b_back)
+                    # Блоки спереди (торчат вперед)
+                    b1 = trimesh.creation.box(extents=[block_w, block_l, block_h])
+                    b1.apply_translation([0, m_y_max - 5.0, z_low])
+                    blocks.append(b1)
                     
-                    # Блоки сверху (смещены от центра, чтобы там влез литник)
-                    b_top1 = trimesh.creation.box(extents=[block_w, block_l, block_h])
-                    b_top1.apply_translation([0, m_y_max * 0.45, m_z_max - block_h/2.0 + 1.0])
-                    blocks.append(b_top1)
+                    b2 = trimesh.creation.box(extents=[block_w, block_l, block_h])
+                    b2.apply_translation([0, m_y_max - 5.0, z_high])
+                    blocks.append(b2)
                     
-                    b_top2 = trimesh.creation.box(extents=[block_w, block_l, block_h])
-                    b_top2.apply_translation([0, m_y_min * 0.45, m_z_max - block_h/2.0 + 1.0])
-                    blocks.append(b_top2)
+                    # Блоки сзади (торчат назад)
+                    b3 = trimesh.creation.box(extents=[block_w, block_l, block_h])
+                    b3.apply_translation([0, m_y_min + 5.0, z_low])
+                    blocks.append(b3)
+                    
+                    b4 = trimesh.creation.box(extents=[block_w, block_l, block_h])
+                    b4.apply_translation([0, m_y_min + 5.0, z_high])
+                    blocks.append(b4)
                     
                     # Впаиваем блоки в скорлупу
                     mold_with_ears = trimesh.boolean.union([mold_base] + blocks, engine='manifold')
                     
-                    # 6. Врезаем литник
+                    # 6. УМНЫЙ ЛИТНИК (В самой верхней точке)
                     if sprue_diam > 0:
+                        # Ищем самую высокую вершину в модели (например, ухо)
+                        highest_idx = mesh.vertices[:, 2].argmax()
+                        highest_y = mesh.vertices[highest_idx, 1]
+                        highest_z = mesh.vertices[highest_idx, 2]
+                        
+                        # Создаем длинный литник и ставим на ось шва (X=0) над самой высокой точкой
                         sprue = trimesh.creation.cylinder(radius=sprue_diam/2.0, height=extents[2] + 40)
-                        sprue.apply_translation([0, 0, raccoon_z_max + 20])
+                        sprue.apply_translation([0, highest_y, highest_z + 20])
+                        
                         mesh_to_subtract = trimesh.boolean.union([mesh, sprue], engine='manifold')
                     else:
                         mesh_to_subtract = mesh
                         
                     mesh_to_subtract.apply_translation([0, 0, 0.05])
                     
-                    # 7. Финальное вычитание (получаем полость)
+                    # 7. Финальное вычитание
                     final_mold = trimesh.boolean.difference([mold_with_ears, mesh_to_subtract], engine='manifold')
                     
                     # 8. Логика выдачи
@@ -150,7 +158,7 @@ with col2:
                         part_right = trimesh.boolean.intersection([final_mold, right_box], engine='manifold')
                         part_left = trimesh.boolean.intersection([final_mold, left_box], engine='manifold')
                         
-                        st.success("✅ Скорлупа успешно разрезана на 2 половинки с ушками!")
+                        st.success("✅ Скорлупа успешно разрезана на 2 половинки с креплениями!")
                         
                         zip_buffer = io.BytesIO()
                         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
