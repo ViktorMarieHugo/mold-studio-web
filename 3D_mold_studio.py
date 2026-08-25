@@ -8,7 +8,7 @@ import io
 st.set_page_config(page_title="Генератор молдов", layout="wide")
 st.title("🧱 Генератор силиконовых форм (Молдов)")
 
-st.caption("Версия 6.0 (Сплошные рельсы + Замки + Выбор литника) | Обновлено: 23 августа 2026 г.")
+st.caption("Версия 7.0 (Сплошная арка по шву + Замки) | Обновлено: 23 августа 2026 г.")
 st.markdown("---")
 
 col1, col2 = st.columns([1, 2])
@@ -20,14 +20,14 @@ with col1:
     st.markdown("---")
     mold_type = st.radio(
         "Конструкция молда:",
-        ["Разрезать на 2 половинки (с готовыми замками и фланцами)", 
+        ["Разрезать на 2 половинки (с замками на арочном фланце)", 
          "Цельная оболочка (для самостоятельной резки)"]
     )
     st.markdown("---")
     
     sprue_mode = st.radio(
         "Отверстия для заливки:",
-        ["Без отверстий (сделаю сам в Bambu Studio над каждой деталью)", 
+        ["Без отверстий (сделаю выпоры сам в Bambu Studio над каждой деталью)", 
          "Автоматически (один канал в самой высокой точке)"]
     )
     st.markdown("---")
@@ -48,7 +48,7 @@ with col2:
     
     if uploaded_file is not None:
         if st.button("Сгенерировать молд", type="primary"):
-            with st.spinner("Создание профессиональной формы с замками..."):
+            with st.spinner("Создание красивого арочного фланца и расчет замков..."):
                 
                 file_extension = os.path.splitext(uploaded_file.name)[1].lower()
                 with tempfile.NamedTemporaryFile(delete=False, suffix=file_extension) as tmp_file:
@@ -76,7 +76,7 @@ with col2:
                     raccoon_z_min = -extents[2]/2.0
                     mold_z_min = raccoon_z_min - bottom_offset
                     
-                    # 2. Создаем "ком глины" (Convex Hull)
+                    # 2. Создаем скорлупу (Convex Hull)
                     blob_mold = mesh.convex_hull
                     
                     # 3. Масштабируем скорлупу
@@ -90,34 +90,36 @@ with col2:
                     
                     blob_mold.apply_translation(blob_center)
                     
-                    # 4. Срезаем низ для ровного дна
+                    # 4. Срезаем низ
                     max_dim = max(extents) * 3
                     cut_box = trimesh.creation.box(extents=[max_dim, max_dim, max_dim])
                     cut_box.apply_translation([0, 0, mold_z_min + max_dim/2.0])
                     mold_base = trimesh.boolean.intersection([blob_mold, cut_box], engine='manifold')
                     
-                    # 5. СПЛОШНЫЕ РЕЛЬСЫ (Фланцы) от низа до верха
-                    m_bounds = mold_base.bounds
-                    m_y_min, m_y_max = m_bounds[0][1], m_bounds[1][1]
-                    m_z_min, m_z_max = m_bounds[0][2], m_bounds[1][2]
+                    # 5. СОЗДАНИЕ ИДЕАЛЬНОЙ АРКИ ПО ШВУ
+                    # Копируем скорлупу и увеличиваем ее еще на 12 мм наружу
+                    flange_profile = blob_mold.copy()
+                    f_center = (flange_profile.bounds[0] + flange_profile.bounds[1]) / 2.0
+                    flange_profile.apply_translation(-f_center)
                     
-                    mold_h = m_z_max - m_z_min
-                    mold_center_z = (m_z_max + m_z_min) / 2.0
+                    flange_offset = 12.0 # Ширина фланца от скорлупы наружу
+                    fy = (blob_mold.extents[1] + flange_offset * 2.0) / blob_mold.extents[1]
+                    fz = (blob_mold.extents[2] + flange_offset * 2.0) / blob_mold.extents[2]
                     
-                    block_w = 30.0 # Ширина фланца
-                    block_l = 20.0 # Врезание в молд
+                    flange_profile.apply_scale([1.0, fy, fz])
+                    flange_profile.apply_translation(f_center)
                     
-                    # Рельса спереди
-                    flange_front = trimesh.creation.box(extents=[block_w, block_l, mold_h])
-                    flange_front.apply_translation([0, m_y_max - 2.0, mold_center_z])
+                    # Вырезаем плоскую "плиту" толщиной 20 мм (по 10 мм на каждую половину)
+                    slab_thickness = 20.0
+                    slab_box = trimesh.creation.box(extents=[slab_thickness, max_dim, max_dim])
+                    slab_box.apply_translation([0, 0, mold_z_min + max_dim/2.0])
                     
-                    # Рельса сзади
-                    flange_back = trimesh.creation.box(extents=[block_w, block_l, mold_h])
-                    flange_back.apply_translation([0, m_y_min + 2.0, mold_center_z])
+                    flange = trimesh.boolean.intersection([flange_profile, slab_box], engine='manifold')
                     
-                    mold_with_ears = trimesh.boolean.union([mold_base, flange_front, flange_back], engine='manifold')
+                    # Впаиваем арку в скорлупу
+                    mold_with_ears = trimesh.boolean.union([mold_base, flange], engine='manifold')
                     
-                    # 6. ЛИТНИК (Умный или ручной)
+                    # 6. ЛИТНИК
                     if "Автоматически" in sprue_mode and sprue_diam > 0:
                         highest_idx = mesh.vertices[:, 2].argmax()
                         highest_y = mesh.vertices[highest_idx, 1]
@@ -131,12 +133,12 @@ with col2:
                         
                     mesh_to_subtract.apply_translation([0, 0, 0.05])
                     
-                    # 7. Финальное вычитание (получаем полость)
+                    # 7. Финальное вычитание полости
                     final_mold = trimesh.boolean.difference([mold_with_ears, mesh_to_subtract], engine='manifold')
                     
-                    # 8. Логика выдачи и СОЗДАНИЕ ЗАМКОВ
+                    # 8. РАЗРЕЗ И УМНЫЕ ЗАМКИ
                     if "Разрезать" in mold_type:
-                        st.info("Разрезаем и генерируем сферические замки...")
+                        st.info("Разрезаем и расставляем сферические замки по арке...")
                         
                         right_box = trimesh.creation.box(extents=[max_dim, max_dim, max_dim])
                         right_box.apply_translation([max_dim/2.0, 0, 0])
@@ -147,30 +149,38 @@ with col2:
                         part_right_base = trimesh.boolean.intersection([final_mold, right_box], engine='manifold')
                         part_left_base = trimesh.boolean.intersection([final_mold, left_box], engine='manifold')
                         
-                        # Генерируем замки (сферы)
-                        locks_male = []   # Выпуклые (радиус 3.3 мм)
-                        locks_female = [] # Впалые (радиус 3.5 мм - зазор 0.2 мм для идеальной печати)
+                        locks_male = []
+                        locks_female = []
                         
-                        z_low = m_z_min + mold_h * 0.25
-                        z_high = m_z_min + mold_h * 0.75
+                        mold_h = mold_base.bounds[1][2] - mold_base.bounds[0][2]
+                        z_low = mold_z_min + mold_h * 0.3
+                        z_high = mold_z_min + mold_h * 0.7
                         
+                        # Динамически находим центр фланца на заданной высоте
                         for z_pos in [z_low, z_high]:
-                            y_f = m_y_max - 2.0
-                            locks_male.append(trimesh.creation.icosphere(radius=3.3, subdivisions=3).apply_translation([0, y_f, z_pos]))
-                            locks_female.append(trimesh.creation.icosphere(radius=3.5, subdivisions=3).apply_translation([0, y_f, z_pos]))
+                            # Режем форму виртуальным ножом, чтобы узнать ее ширину на этой высоте
+                            slice_2d = mold_base.section(plane_origin=[0,0,z_pos], plane_normal=[0,0,1])
                             
-                            y_b = m_y_min + 2.0
-                            locks_male.append(trimesh.creation.icosphere(radius=3.3, subdivisions=3).apply_translation([0, y_b, z_pos]))
-                            locks_female.append(trimesh.creation.icosphere(radius=3.5, subdivisions=3).apply_translation([0, y_b, z_pos]))
+                            if slice_2d is not None:
+                                y_min_slice = slice_2d.bounds[0][1]
+                                y_max_slice = slice_2d.bounds[1][1]
+                                # Ставим замок ровно по центру 12-миллиметрового фланца (отступаем 6 мм)
+                                positions = [[0, y_min_slice - 6.0, z_pos], [0, y_max_slice + 6.0, z_pos]]
+                            else:
+                                # Резервный вариант, если срез не сработал
+                                positions = [[0, mold_base.bounds[0][1] - 6.0, z_pos], [0, mold_base.bounds[1][1] + 6.0, z_pos]]
                             
+                            for pos in positions:
+                                locks_male.append(trimesh.creation.icosphere(radius=3.3, subdivisions=3).apply_translation(pos))
+                                locks_female.append(trimesh.creation.icosphere(radius=3.5, subdivisions=3).apply_translation(pos))
+                        
                         mesh_locks_male = trimesh.util.concatenate(locks_male)
                         mesh_locks_female = trimesh.util.concatenate(locks_female)
                         
-                        # Впаиваем выпуклости в правую половину, вырезаем ямки из левой
                         part_right = trimesh.boolean.union([part_right_base, mesh_locks_male], engine='manifold')
                         part_left = trimesh.boolean.difference([part_left_base, mesh_locks_female], engine='manifold')
                         
-                        st.success("✅ Молд разрезан! Сферические замки с зазором под 3D-печать созданы.")
+                        st.success("✅ Арочный молд с замками готов!")
                         
                         zip_buffer = io.BytesIO()
                         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
@@ -180,17 +190,17 @@ with col2:
                         st.download_button(
                             label="Скачать половинки (ZIP-архив)",
                             data=zip_buffer.getvalue(),
-                            file_name="mold_professional.zip",
+                            file_name="mold_arch_professional.zip",
                             mime="application/zip"
                         )
                     else:
-                        st.success("✅ Цельная скорлупа успешно создана!")
+                        st.success("✅ Цельная оболочка с аркой создана!")
                         
                         final_data = final_mold.export(file_type='stl')
                         st.download_button(
                             label="Скачать цельный молд (STL)",
                             data=final_data,
-                            file_name="mold_shell_solid.stl",
+                            file_name="mold_arch_solid.stl",
                             mime="model/stl"
                         )
 
