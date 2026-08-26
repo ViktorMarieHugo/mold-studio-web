@@ -9,7 +9,7 @@ import math
 st.set_page_config(page_title="Генератор молдов", layout="wide")
 st.title("🧱 Генератор силиконовых форм (Молдов)")
 
-st.caption("Версия 11.0 (Умный нейминг файлов и статусов) | Обновлено: 26 августа 2026 г.")
+st.caption("Версия 12.0 (Исправлена физика: монолитная подставка, пуансон и чистый литник) | Обновлено: 26 августа 2026 г.")
 st.markdown("---")
 
 col1, col2 = st.columns([1, 2])
@@ -51,20 +51,21 @@ with col1:
     st.markdown("---")
     wall_thickness = st.slider("Толщина стенок (мм)", min_value=2, max_value=15, value=6, step=1)
     bottom_offset = st.slider("Толщина дна молда (мм)", min_value=1, max_value=10, value=3, step=1)
+    sprue_diam = st.slider("Диаметр литника (мм)", min_value=2, max_value=20, value=8, step=1)
 
 with col2:
     st.subheader("Обработка и результат")
     
     if uploaded_file is not None:
         
-        # --- ЛОГИКА ИМЕНОВАНИЯ И СТАТУСОВ ---
+        # --- ЛОГИКА ИМЕНОВАНИЯ ---
         is_hollow = "Пустотелая" in cast_mode
         is_split = "Разрезать" in mold_type
-        has_puanson = is_hollow and hollow_method and "Пуансон" in hollow_method
-        has_obkatka = is_hollow and hollow_method and "обкатки" in hollow_method
+        # ИСПРАВЛЕНИЕ: Жесткая проверка пуансона без учета регистра
+        has_puanson = is_hollow and hollow_method and "пуансон" in hollow_method.lower()
+        has_obkatka = is_hollow and hollow_method and "обкатки" in hollow_method.lower()
         has_sprue = not is_hollow and "Авто-литник" in sprue_mode
 
-        # Формируем динамическое имя файла
         name_parts = ["irivek_mold"]
         name_parts.append("hollow" if is_hollow else "solid")
         if has_puanson: name_parts.append("puanson")
@@ -75,7 +76,6 @@ with col2:
         final_ext = ".zip" if is_split else ".stl"
         final_filename = "_".join(name_parts) + final_ext
 
-        # Формируем текст спиннера
         if is_hollow:
             spinner_msg = "Проектирование пустотелой формы с Т-образным пуансоном..." if has_puanson else "Проектирование пустотелой формы для обкатки..."
         else:
@@ -93,19 +93,21 @@ with col2:
                     loaded_data = trimesh.load(tmp_file_path)
                     mesh = loaded_data.dump(concatenate=True) if isinstance(loaded_data, trimesh.Scene) else loaded_data
                     
-                    # 1. ПЕРЕВОРОТ
+                    # 1. ПЕРЕВОРОТ И ВЫРАВНИВАНИЕ
                     if is_hollow:
                         rot_matrix = trimesh.transformations.rotation_matrix(math.pi, [1, 0, 0])
                         mesh.apply_transform(rot_matrix)
                         
-                    # 2. ИДЕАЛЬНОЕ ВЫРАВНИВАНИЕ
                     b_min = mesh.bounds[0]
                     mesh.apply_translation([-b_min[0] - (mesh.extents[0]/2.0), -b_min[1] - (mesh.extents[1]/2.0), -b_min[2]])
                     
                     extents = mesh.extents 
                     z_max_model = mesh.bounds[1][2]
                     
-                    # 3. ОБОЛОЧКА И ФЛАНЕЦ
+                    # ИСПРАВЛЕНИЕ: Адекватный размер коробок резки (3x от размера детали)
+                    max_dim = max(extents) * 3.0
+                    
+                    # 2. ОБОЛОЧКА И ФЛАНЕЦ
                     blob_mold = mesh.convex_hull
                     c_blob = (blob_mold.bounds[0] + blob_mold.bounds[1]) / 2.0
                     blob_mold.apply_translation(-c_blob)
@@ -122,68 +124,66 @@ with col2:
                     flange_profile.apply_scale([1.0, (blob_mold.extents[1] + 24.0)/blob_mold.extents[1], 1.0])
                     flange_profile.apply_translation(c_flange)
                     
-                    giant_dim = 2000.0
-                    slab_box = trimesh.creation.box(extents=[20.0, giant_dim, giant_dim])
+                    slab_box = trimesh.creation.box(extents=[20.0, max_dim, max_dim])
                     flange = trimesh.boolean.intersection([flange_profile, slab_box], engine='manifold')
-                    
                     raw_mold = trimesh.boolean.union([blob_mold, flange], engine='manifold')
                     
-                    # 4. ВИРТУАЛЬНЫЙ НОЖ
+                    # 3. ВИРТУАЛЬНЫЙ НОЖ И МОНОЛИТНАЯ ПОДСТАВКА
                     if is_hollow:
                         z_bottom = -wall_thickness
                         z_top = z_max_model
                         
                         box_h = z_top - z_bottom
-                        cut_box = trimesh.creation.box(extents=[giant_dim, giant_dim, box_h])
+                        cut_box = trimesh.creation.box(extents=[max_dim, max_dim, box_h])
                         cut_box.apply_translation([0, 0, z_bottom + box_h/2.0])
-                        
                         mold_base = trimesh.boolean.intersection([raw_mold, cut_box], engine='manifold')
                         
                         stand_x = extents[0] * 1.5 + 20.0
                         stand_y = extents[1] * 1.5 + 20.0
                         stand = trimesh.creation.box(extents=[stand_x, stand_y, 10.0])
-                        stand.apply_translation([0, 0, z_bottom - 5.0])
+                        # ИСПРАВЛЕНИЕ: Подставка нахлестывается на 1 мм вглубь формы, чтобы намертво припаяться!
+                        stand.apply_translation([0, 0, z_bottom - 5.0 + 1.0])
                         mold_base = trimesh.boolean.union([mold_base, stand], engine='manifold')
                     else:
                         z_bottom = -bottom_offset
                         z_top = z_max_model + wall_thickness
                         
                         box_h = z_top - z_bottom
-                        cut_box = trimesh.creation.box(extents=[giant_dim, giant_dim, box_h])
+                        cut_box = trimesh.creation.box(extents=[max_dim, max_dim, box_h])
                         cut_box.apply_translation([0, 0, z_bottom + box_h/2.0])
                         mold_base = trimesh.boolean.intersection([raw_mold, cut_box], engine='manifold')
 
-                    # 5. ГРАВИРОВКА
                     try:
                         plate = trimesh.creation.box(extents=[5.0, 40.0, 15.0])
                         plate.apply_translation([-10.0, 0, z_max_model / 2.0])
                         mold_base = trimesh.boolean.difference([mold_base, plate], engine='manifold')
                     except: pass
 
-                    # 6. ЛИТНИКИ
+                    # 4. ЛИТНИК И ФИНАЛЬНЫЙ ВЫРЕЗ
+                    mesh.apply_translation([0, 0, 0.05])
+                    
+                    # ИСПРАВЛЕНИЕ: Вычитаем зайца и литник РАЗДЕЛЬНО, чтобы не ломать сетку!
                     if has_sprue:
                         highest_idx = mesh.vertices[:, 2].argmax()
                         highest_z = mesh.vertices[highest_idx, 2]
                         highest_y = mesh.vertices[highest_idx, 1]
                         
                         sprue_h = z_top - highest_z + 10.0 
-                        sprue = trimesh.creation.cylinder(radius=4.0, height=sprue_h)
+                        sprue = trimesh.creation.cylinder(radius=sprue_diam/2.0, height=sprue_h)
                         sprue.apply_translation([0, highest_y, highest_z + sprue_h/2.0])
-                        mesh_to_subtract = trimesh.boolean.union([mesh, sprue], engine='manifold')
-                    else:
-                        mesh_to_subtract = mesh
                         
-                    mesh_to_subtract.apply_translation([0, 0, 0.05])
-                    final_mold = trimesh.boolean.difference([mold_base, mesh_to_subtract], engine='manifold')
+                        final_mold = trimesh.boolean.difference([mold_base, mesh, sprue], engine='manifold')
+                    else:
+                        final_mold = trimesh.boolean.difference([mold_base, mesh], engine='manifold')
                     
-                    # 7. РАЗРЕЗ И ЗАМКИ
+                    # 5. РАЗРЕЗ И ЗАМКИ
                     if is_split:
                         st.info("Форма сгенерирована. Выполняется разрез и расстановка замков...")
                         
-                        right_box = trimesh.creation.box(extents=[giant_dim, giant_dim, giant_dim])
-                        right_box.apply_translation([giant_dim/2.0, 0, 0])
-                        left_box = trimesh.creation.box(extents=[giant_dim, giant_dim, giant_dim])
-                        left_box.apply_translation([-giant_dim/2.0, 0, 0])
+                        right_box = trimesh.creation.box(extents=[max_dim, max_dim, max_dim])
+                        right_box.apply_translation([max_dim/2.0, 0, 0])
+                        left_box = trimesh.creation.box(extents=[max_dim, max_dim, max_dim])
+                        left_box.apply_translation([-max_dim/2.0, 0, 0])
                         
                         part_right_base = trimesh.boolean.intersection([final_mold, right_box], engine='manifold')
                         part_left_base = trimesh.boolean.intersection([final_mold, left_box], engine='manifold')
@@ -213,7 +213,7 @@ with col2:
                             zip_file.writestr(f"left_female_{final_filename.replace('.zip', '.stl')}", part_left.export(file_type='stl'))
                             zip_file.writestr(f"right_male_{final_filename.replace('.zip', '.stl')}", part_right.export(file_type='stl'))
                             
-                            # ПУАНСОН
+                            # ИСПРАВЛЕНИЕ: ГЕНЕРАЦИЯ ПУАНСОНА ТЕПЕРЬ СРАБАТЫВАЕТ!
                             if has_puanson:
                                 slice_top = mold_base.section(plane_origin=[0,0,z_top-1.0], plane_normal=[0,0,1])
                                 bar_l = (slice_top.bounds[1][1] - slice_top.bounds[0][1]) + 20.0 if slice_top else extents[1] + 40.0
