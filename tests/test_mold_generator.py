@@ -15,10 +15,10 @@ def sample_master_bytes() -> bytes:
     return bytes(mesh.export(file_type="stl"))
 
 
-def figurine_master_bytes() -> bytes:
+def figurine_master_bytes(file_type: str = "stl") -> bytes:
     body = trimesh.creation.box(extents=(18.0, 14.0, 24.0))
     body.apply_translation((0.0, 0.0, 12.0))
-    head = trimesh.creation.icosphere(subdivisions=2, radius=8.0)
+    head = trimesh.creation.icosphere(subdivisions=3, radius=8.0)
     head.apply_translation((0.0, 0.0, 27.0))
     left_ear = trimesh.creation.box(extents=(4.0, 5.0, 16.0))
     left_ear.apply_translation((-4.5, 0.0, 39.0))
@@ -28,6 +28,8 @@ def figurine_master_bytes() -> bytes:
         [body, head, left_ear, right_ear],
         engine="manifold",
     )
+    if file_type == "3mf":
+        return bytes(trimesh.Scene(mesh).export(file_type="3mf"))
     return bytes(mesh.export(file_type="stl"))
 
 
@@ -97,8 +99,8 @@ class MoldGeneratorTests(unittest.TestCase):
 
     def test_generates_round_base_for_nonconvex_figurine(self) -> None:
         kit = generate_mold_kit(
-            figurine_master_bytes(),
-            "stl",
+            figurine_master_bytes("3mf"),
+            "3mf",
             silicone_thickness=7.0,
             plastic_wall=3.0,
             base_shape="round",

@@ -152,7 +152,10 @@ def _to_manifold(mesh: trimesh.Trimesh) -> manifold3d.Manifold:
     return solid
 
 
-def _to_trimesh(solid: manifold3d.Manifold) -> trimesh.Trimesh:
+def _to_trimesh(
+    solid: manifold3d.Manifold,
+    part_name: str = "деталь",
+) -> trimesh.Trimesh:
     if solid.status() != manifold3d.Error.NoError or solid.is_empty():
         raise MoldGenerationError(
             f"Одна из деталей получилась пустой или повреждённой ({solid.status()})."
@@ -160,30 +163,38 @@ def _to_trimesh(solid: manifold3d.Manifold) -> trimesh.Trimesh:
     # Boolean products can retain duplicated property vertices along source-mesh
     # boundaries. Resetting ancestry emits one welded positional mesh for STL.
     raw = solid.as_original().to_mesh64()
-    mesh = trimesh.Trimesh(
-        vertices=np.asarray(raw.vert_properties[:, :3], dtype=np.float64),
-        faces=np.asarray(raw.tri_verts, dtype=np.int64),
-        process=False,
+    vertices = np.asarray(raw.vert_properties[:, :3], dtype=np.float64)
+    faces = np.asarray(raw.tri_verts, dtype=np.int64)
+    last_mesh: trimesh.Trimesh | None = None
+
+    # Manifold can legitimately emit very thin triangles after booleans. Removing
+    # them creates tiny holes (typically six open edges on detailed 3MF models),
+    # so preserve every face and only weld coincident vertices. Try increasingly
+    # tolerant, still sub-micron-to-micron welds for cross-platform float variance.
+    for digits_vertex in (None, 8, 7, 6, 5, 4):
+        mesh = trimesh.Trimesh(vertices=vertices, faces=faces, process=False)
+        if digits_vertex is not None:
+            mesh.merge_vertices(
+                merge_tex=True,
+                merge_norm=True,
+                digits_vertex=digits_vertex,
+            )
+        mesh.remove_unreferenced_vertices()
+        trimesh.repair.fix_normals(mesh, multibody=True)
+        last_mesh = mesh
+        if mesh.faces.size > 0 and mesh.is_watertight and mesh.volume > 0:
+            return mesh
+
+    assert last_mesh is not None
+    edge_counts = np.bincount(last_mesh.edges_unique_inverse)
+    open_edges = int(np.count_nonzero(edge_counts == 1))
+    crowded_edges = int(np.count_nonzero(edge_counts > 2))
+    raise MoldGenerationError(
+        f"Выходная деталь «{part_name}» не является замкнутым телом "
+        f"(грани: {len(last_mesh.faces)}, watertight: {last_mesh.is_watertight}, "
+        f"объём: {last_mesh.volume:.3f}, open edges: {open_edges}, "
+        f"nonmanifold edges: {crowded_edges})."
     )
-    mesh.merge_vertices(merge_tex=True, merge_norm=True, digits_vertex=6)
-    mesh.update_faces(mesh.nondegenerate_faces())
-    mesh.remove_unreferenced_vertices()
-    trimesh.repair.fix_normals(mesh, multibody=True)
-    if mesh.faces.size == 0 or not mesh.is_watertight or mesh.volume <= 0:
-        edge_counts = np.bincount(mesh.edges_unique_inverse)
-        open_edges = int(np.count_nonzero(edge_counts == 1))
-        crowded_edges = int(np.count_nonzero(edge_counts > 2))
-        crowded_centers = mesh.vertices[
-            mesh.edges_unique[edge_counts > 2]
-        ].mean(axis=1)
-        raise MoldGenerationError(
-            "Одна из выходных деталей не является замкнутым телом "
-            f"(грани: {len(mesh.faces)}, watertight: {mesh.is_watertight}, объём: {mesh.volume:.3f}, "
-            f"open edges: {open_edges}, nonmanifold edges: {crowded_edges}, "
-            f"centers: {np.round(crowded_centers, 3).tolist()}, "
-            f"merge: {len(raw.merge_from_vert)}, runs: {len(raw.run_index)}, transforms: {len(raw.run_transform)})."
-        )
-    return mesh
 
 
 def _box(size: tuple[float, float, float], center: tuple[float, float, float]) -> manifold3d.Manifold:
@@ -415,9 +426,12 @@ def generate_mold_kit(
     )
     puanson = master + plank
 
-    puanson_mesh = _prepare_for_print(_to_trimesh(puanson), flip_master=True)
-    left_mesh = _prepare_for_print(_to_trimesh(left_part))
-    right_mesh = _prepare_for_print(_to_trimesh(right_part))
+    puanson_mesh = _prepare_for_print(
+        _to_trimesh(puanson, "мастер-пуансон"),
+        flip_master=True,
+    )
+    left_mesh = _prepare_for_print(_to_trimesh(left_part, "левая опалубка"))
+    right_mesh = _prepare_for_print(_to_trimesh(right_part, "правая опалубка"))
 
     silicone_volume = max(0.0, silicone_body.volume() - master.volume())
     plastic_volume = max(0.0, left_part.volume() + right_part.volume())
