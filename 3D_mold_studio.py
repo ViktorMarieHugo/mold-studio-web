@@ -1,154 +1,167 @@
+from __future__ import annotations
+
 import streamlit as st
-import trimesh
-import tempfile
-import os
-import zipfile
-import io
-import math
 
-st.set_page_config(page_title="Генератор молдов", layout="wide")
-st.title("🧱 Генератор форм для заливки силикона")
+from mold_generator import (
+    MoldGenerationError,
+    MoldKit,
+    extension_from_name,
+    generate_mold_kit,
+)
 
-st.caption("Версия: Чистый силикон (Опалубка + Мастер-модель) | Без лишних функций")
-st.markdown("---")
 
-col1, col2 = st.columns([1, 2])
+@st.cache_data(max_entries=4, show_spinner=False)
+def generate_cached(
+    file_bytes: bytes,
+    file_type: str,
+    silicone_thickness: int,
+    plastic_wall: int,
+    base_shape: str,
+) -> MoldKit:
+    return generate_mold_kit(
+        file_bytes=file_bytes,
+        file_type=file_type,
+        silicone_thickness=float(silicone_thickness),
+        plastic_wall=float(plastic_wall),
+        base_shape=base_shape,
+    )
 
-with col1:
-    st.subheader("Настройки формы")
-    uploaded_file = st.file_uploader("Загрузите мастер-модель", type=["stl", "3mf"])
-    
-    st.markdown("---")
-    st.info("💡 **Как это работает:** Модель перевернется вверх ногами. Сверху добавится планка-держатель (это ваш пуансон). Вокруг сгенерируется пластиковый горшок из двух половин. Зазор между ними — это ваш будущий силиконовый молд.")
-    
-    silicone_thickness = st.slider("Толщина силиконовой формы (Зазор, мм)", min_value=5, max_value=30, value=10, step=1)
-    plastic_wall = st.slider("Толщина пластиковой опалубки (мм)", min_value=2, max_value=10, value=3, step=1)
 
-with col2:
-    st.subheader("Обработка и результат")
-    
-    if uploaded_file is not None:
-        
-        final_filename = "silicone_mold_kit.zip"
-        
-        if st.button("Сгенерировать комплект", type="primary"):
-            with st.spinner("Генерация пуансона и пластиковой опалубки..."):
-                
-                file_extension = os.path.splitext(uploaded_file.name)[1].lower()
-                with tempfile.NamedTemporaryFile(delete=False, suffix=file_extension) as tmp_file:
-                    tmp_file.write(uploaded_file.getvalue())
-                    tmp_file_path = tmp_file.name
-                
-                try:
-                    loaded_data = trimesh.load(tmp_file_path)
-                    mesh = loaded_data.dump(concatenate=True) if isinstance(loaded_data, trimesh.Scene) else loaded_data
-                    
-                    # 1. ПЕРЕВОРОТ И ЦЕНТРИРОВАНИЕ (База модели становится нулем Z=0)
-                    mesh.apply_translation(-mesh.centroid)
-                    rot_matrix = trimesh.transformations.rotation_matrix(math.pi, [1, 0, 0])
-                    mesh.apply_transform(rot_matrix)
-                    
-                    # Ровняем самую верхнюю плоскую часть (базу зайца) строго по Z=0
-                    mesh.apply_translation([0, 0, -mesh.bounds[1][2]])
-                    b_c = (mesh.bounds[0] + mesh.bounds[1]) / 2.0
-                    mesh.apply_translation([-b_c[0], -b_c[1], 0])
-                    
-                    # 2. ГЕНЕРАЦИЯ ПУАНСОНА (Заяц + Планка)
-                    plank_w = mesh.extents[0] + (silicone_thickness * 2) + (plastic_wall * 2) + 30.0
-                    plank_d = 20.0
-                    plank_h = 10.0
-                    plank = trimesh.creation.box(extents=[plank_w, plank_d, plank_h])
-                    plank.apply_translation([0, 0, plank_h / 2.0]) # Планка лежит ровно на Z=0 и растет вверх
-                    
-                    puanson = trimesh.boolean.union([mesh, plank], engine='manifold')
-                    
-                    # 3. ВНУТРЕННИЙ ОБЪЕМ (Форма самого силикона)
-                    hull = mesh.convex_hull
-                    hull_c = (hull.bounds[0] + hull.bounds[1]) / 2.0
-                    hull.apply_translation(-hull_c)
-                    
-                    sx = (hull.extents[0] + silicone_thickness * 2) / hull.extents[0]
-                    sy = (hull.extents[1] + silicone_thickness * 2) / hull.extents[1]
-                    sz = (hull.extents[2] + silicone_thickness * 2) / hull.extents[2]
-                    hull.apply_scale([sx, sy, sz])
-                    hull.apply_translation(hull_c)
-                    
-                    giant_dim = max(mesh.extents) * 3.0
-                    z_top = 0.0 # Верх горшка упирается в планку
-                    z_bot_silicone = mesh.bounds[0][2] - silicone_thickness # Плоское дно силикона (будущая верхушка молда)
-                    
-                    inner_cut = trimesh.creation.box(extents=[giant_dim, giant_dim, z_top - z_bot_silicone])
-                    inner_cut.apply_translation([0, 0, z_bot_silicone + (z_top - z_bot_silicone)/2.0])
-                    inner_vol = trimesh.boolean.intersection([hull, inner_cut], engine='manifold')
-                    
-                    # 4. ВНЕШНИЙ ОБЪЕМ (Пластиковый горшок)
-                    outer_hull = mesh.convex_hull
-                    outer_hull.apply_translation(-hull_c)
-                    
-                    sx_o = (outer_hull.extents[0] + (silicone_thickness + plastic_wall) * 2) / outer_hull.extents[0]
-                    sy_o = (outer_hull.extents[1] + (silicone_thickness + plastic_wall) * 2) / outer_hull.extents[1]
-                    sz_o = (outer_hull.extents[2] + (silicone_thickness + plastic_wall) * 2) / outer_hull.extents[2]
-                    outer_hull.apply_scale([sx_o, sy_o, sz_o])
-                    outer_hull.apply_translation(hull_c)
-                    
-                    z_bot_plastic = z_bot_silicone - plastic_wall # Пластиковое дно опалубки
-                    outer_cut = trimesh.creation.box(extents=[giant_dim, giant_dim, z_top - z_bot_plastic])
-                    outer_cut.apply_translation([0, 0, z_bot_plastic + (z_top - z_bot_plastic)/2.0])
-                    outer_vol = trimesh.boolean.intersection([outer_hull, outer_cut], engine='manifold')
-                    
-                    # Вырезаем полость в горшке
-                    pot_raw = trimesh.boolean.difference([outer_vol, inner_vol], engine='manifold')
-                    
-                    # Добавляем рельсы для замков
-                    flange_profile = outer_vol.copy()
-                    fc = (flange_profile.bounds[0] + flange_profile.bounds[1]) / 2.0
-                    flange_profile.apply_translation(-fc)
-                    flange_profile.apply_scale([1.0, 1.2, 1.0])
-                    flange_profile.apply_translation(fc)
-                    
-                    slab = trimesh.creation.box(extents=[20.0, giant_dim, giant_dim])
-                    flange = trimesh.boolean.intersection([flange_profile, slab], engine='manifold')
-                    pot = trimesh.boolean.union([pot_raw, flange], engine='manifold')
-                    
-                    # 5. РАЗРЕЗ ГОРШКА И ЗАМКИ
-                    right_box = trimesh.creation.box(extents=[giant_dim, giant_dim, giant_dim])
-                    right_box.apply_translation([giant_dim/2.0, 0, 0])
-                    left_box = trimesh.creation.box(extents=[giant_dim, giant_dim, giant_dim])
-                        left_box.apply_translation([-giant_dim/2.0, 0, 0])
-                    
-                    part_right_base = trimesh.boolean.intersection([pot, right_box], engine='manifold')
-                    part_left_base = trimesh.boolean.intersection([pot, left_box], engine='manifold')
-                    
-                    locks_male, locks_female = [], []
-                    z_low = z_bot_plastic + (z_top - z_bot_plastic) * 0.3
-                    z_high = z_bot_plastic + (z_top - z_bot_plastic) * 0.7
-                    
-                    for z_pos in [z_low, z_high]:
-                        slice_2d = pot.section(plane_origin=[0,0,z_pos], plane_normal=[0,0,1])
-                        if slice_2d is not None:
-                            y_min = slice_2d.bounds[0][1]
-                            y_max = slice_2d.bounds[1][1]
-                            for pos in [[0, y_min + 6.0, z_pos], [0, y_max - 6.0, z_pos]]:
-                                locks_male.append(trimesh.creation.icosphere(radius=3.0, subdivisions=3).apply_translation(pos))
-                                locks_female.append(trimesh.creation.icosphere(radius=3.2, subdivisions=3).apply_translation(pos))
-                    
-                    if locks_male:
-                        part_right = trimesh.boolean.union([part_right_base, trimesh.util.concatenate(locks_male)], engine='manifold')
-                        part_left = trimesh.boolean.difference([part_left_base, trimesh.util.concatenate(locks_female)], engine='manifold')
-                    else:
-                        part_right, part_left = part_right_base, part_left_base
-                    
-                    # 6. УПАКОВКА В ZIP
-                    zip_buffer = io.BytesIO()
-                    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
-                        zip_file.writestr("1_puanson_master.stl", puanson.export(file_type='stl'))
-                        zip_file.writestr("2_pot_left.stl", part_left.export(file_type='stl'))
-                        zip_file.writestr("3_pot_right.stl", part_right.export(file_type='stl'))
-                    
-                    st.success("✅ Готово! Сгенерированы мастер-пуансон и 2 половинки пластиковой опалубки.")
-                    st.download_button("Скачать комплект (ZIP-архив)", data=zip_buffer.getvalue(), file_name=final_filename, mime="application/zip")
-                    
-                except Exception as e:
-                    st.error(f"Произошла ошибка: {e}")
-                finally:
-                    if os.path.exists(tmp_file_path): os.remove(tmp_file_path)
+st.set_page_config(
+    page_title="Irivek3Dstudio — силиконовые формы",
+    page_icon=":material/deployed_code:",
+    layout="wide",
+)
+
+st.session_state.setdefault("mold_kit", None)
+st.session_state.setdefault("mold_kit_name", "silicone_mold_kit.zip")
+
+st.title("Irivek3Dstudio")
+st.caption(
+    "Генератор 3D-печатной оснастки для цельной силиконовой формы открытого типа"
+)
+
+settings_column, result_column = st.columns([1, 1.35], gap="large")
+
+with settings_column:
+    with st.container(border=True):
+        st.subheader("Параметры формы")
+        with st.form("mold_settings"):
+            uploaded_file = st.file_uploader(
+                "Мастер-модель",
+                type=["stl", "3mf"],
+                max_upload_size=100,
+                help="Модель должна быть замкнутой, ориентированной вертикально и иметь плоское основание. STL читается в миллиметрах.",
+                key="master_model",
+            )
+            silicone_thickness = st.slider(
+                "Минимальная толщина силикона, мм",
+                min_value=5,
+                max_value=30,
+                value=10,
+                step=1,
+                key="silicone_thickness",
+            )
+            plastic_wall = st.slider(
+                "Толщина пластиковой опалубки, мм",
+                min_value=2,
+                max_value=10,
+                value=3,
+                step=1,
+                key="plastic_wall",
+            )
+            base_shape_label = st.segmented_control(
+                "Основание силиконовой формы",
+                options=["Квадратное", "Круглое"],
+                default="Квадратное",
+                required=True,
+                width="stretch",
+                key="base_shape",
+            )
+            submitted = st.form_submit_button(
+                "Сгенерировать комплект",
+                type="primary",
+                icon=":material/build:",
+                width="stretch",
+            )
+
+        st.caption(
+            "Оснастка состоит из пуансона и двух половин опалубки. "
+            "Планка оставляет свободные окна для заливки силикона."
+        )
+
+with result_column:
+    result_slot = st.container(border=True)
+
+if submitted:
+    if uploaded_file is None:
+        st.session_state.mold_kit = None
+        result_slot.error("Сначала загрузите мастер-модель STL или 3MF.")
+    else:
+        base_shape = "round" if base_shape_label == "Круглое" else "square"
+        output_name = f"{uploaded_file.name.rsplit('.', 1)[0]}_mold_kit.zip"
+        try:
+            with result_slot.status(
+                "Проверяем модель и строим оснастку…",
+                expanded=True,
+            ) as status:
+                status.write("Проверяем замкнутость и плоское основание")
+                status.write("Строим экономичную оболочку и устойчивую подошву")
+                status.write("Разделяем опалубку, добавляем фланцы и замки")
+                kit = generate_cached(
+                    uploaded_file.getvalue(),
+                    extension_from_name(uploaded_file.name),
+                    silicone_thickness,
+                    plastic_wall,
+                    base_shape,
+                )
+                status.update(
+                    label="Комплект готов",
+                    state="complete",
+                    expanded=False,
+                )
+            st.session_state.mold_kit = kit
+            st.session_state.mold_kit_name = output_name
+        except MoldGenerationError as exc:
+            st.session_state.mold_kit = None
+            result_slot.error(str(exc))
+        except Exception as exc:
+            st.session_state.mold_kit = None
+            result_slot.error(f"Не удалось построить оснастку: {exc}")
+
+kit = st.session_state.mold_kit
+if kit is not None:
+    result_slot.subheader("Готовый комплект")
+    with result_slot.container(horizontal=True, gap="small"):
+        st.metric(
+            "Расход силикона",
+            f"≈ {kit.silicone_volume_ml:.0f} мл",
+            border=True,
+        )
+        st.metric(
+            "Размер формы",
+            " × ".join(f"{value:.0f}" for value in kit.mold_size_mm) + " мм",
+            border=True,
+        )
+        st.metric("Файлы", "3 STL", border=True)
+
+    result_slot.download_button(
+        "Скачать ZIP-комплект",
+        data=kit.zip_bytes,
+        file_name=st.session_state.mold_kit_name,
+        mime="application/zip",
+        type="primary",
+        icon=":material/download:",
+        width="stretch",
+        on_click="ignore",
+    )
+    result_slot.caption(
+        f"Исходная модель: {kit.source_faces:,} треугольников. "
+        f"Расчётная оболочка: {kit.tooling_faces:,} треугольников. "
+        f"Оценочный объём пластика: {kit.plastic_volume_ml:.0f} см³."
+    )
+elif not submitted:
+    result_slot.info(
+        "Загрузите модель, задайте две толщины и выберите форму основания. "
+        "Здесь появятся расчёт расхода и ZIP из трёх STL-файлов."
+    )
