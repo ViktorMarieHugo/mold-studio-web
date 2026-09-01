@@ -64,6 +64,26 @@ class MoldGeneratorTests(unittest.TestCase):
                 self.assertGreater(mesh.volume, 0.0, filename)
                 self.assertAlmostEqual(float(mesh.bounds[0, 2]), 0.0, places=4)
 
+            for filename in ("2_formwork_left.stl", "3_formwork_right.stl"):
+                formwork = trimesh.load(
+                    BytesIO(archive.read(filename)),
+                    file_type="stl",
+                    force="mesh",
+                )
+                cut_height = float(formwork.extents[2]) * 0.25
+                faces_above_base = formwork.triangles_center[:, 2] > cut_height
+                upper_part = formwork.submesh(
+                    [faces_above_base],
+                    append=True,
+                    repair=False,
+                )
+                connected_components = upper_part.split(only_watertight=False)
+                self.assertEqual(
+                    len(connected_components),
+                    1,
+                    f"Clamp rails must remain connected to the shell: {filename}",
+                )
+
     def test_rejects_master_without_flat_base(self) -> None:
         sphere = trimesh.creation.icosphere(subdivisions=2, radius=10.0)
         sphere.apply_translation((0.0, 0.0, 10.0))

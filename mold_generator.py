@@ -338,15 +338,24 @@ def generate_mold_kit(
     )
     pot = outer_body - silicone_cutter
 
-    # Two external clamp rails stay outside the silicone cavity. They also carry
-    # the spherical alignment locks and support the master plank during casting.
+    # A continuous flange follows the entire split contour. The silicone cavity
+    # is subtracted from the flange blank, so the web joins the shell everywhere
+    # without intruding into the future silicone mold. Thicker outer rails give
+    # the clamps a rigid grip and carry the spherical alignment locks.
     pin_radius = min(3.5, max(2.2, plastic_wall * 0.9))
     rail_x = max(2.0 * pin_radius + 1.0, 2.0 * plastic_wall + 2.0)
     rail_depth = max(10.0, plastic_wall * 3.0)
     rail_start = base_span[1] / 2.0 + plastic_wall * 0.5
     rail_center_y = rail_start + rail_depth / 2.0
+    rail_outer_y = rail_start + rail_depth
     rail_height = -outer_bottom
     rail_center_z = outer_bottom + rail_height / 2.0
+    flange_web_x = max(4.0, plastic_wall * 1.5)
+    flange_blank = _box(
+        (flange_web_x, 2.0 * rail_outer_y, rail_height),
+        (0.0, 0.0, rail_center_z),
+    )
+    flange_web = flange_blank - silicone_cutter
     front_rail = _box(
         (rail_x, rail_depth, rail_height),
         (0.0, rail_center_y, rail_center_z),
@@ -356,7 +365,7 @@ def generate_mold_kit(
         (0.0, -rail_center_y, rail_center_z),
     )
     pot_with_rails = manifold3d.Manifold.batch_boolean(
-        [pot, front_rail, rear_rail], manifold3d.OpType.Add
+        [pot, flange_web, front_rail, rear_rail], manifold3d.OpType.Add
     )
 
     right_base, left_base = pot_with_rails.split_by_plane((1.0, 0.0, 0.0), 0.0)
@@ -393,7 +402,6 @@ def generate_mold_kit(
     desired_plank_width = max(8.0, min(18.0, float(base_size[0]) * 0.5))
     maximum_plank_width = max(6.0, base_span[0] - 2.0 * pour_clearance)
     plank_width = min(desired_plank_width, maximum_plank_width)
-    rail_outer_y = rail_start + rail_depth
     plank_overhang = 4.0
     plank_length = 2.0 * (rail_outer_y + plank_overhang)
     plank_height = 8.0
