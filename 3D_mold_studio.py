@@ -16,14 +16,12 @@ def generate_cached(
     file_type: str,
     silicone_thickness: int,
     plastic_wall: int,
-    base_shape: str,
 ) -> MoldKit:
     return generate_mold_kit(
         file_bytes=file_bytes,
         file_type=file_type,
         silicone_thickness=float(silicone_thickness),
         plastic_wall=float(plastic_wall),
-        base_shape=base_shape,
     )
 
 
@@ -70,13 +68,9 @@ with settings_column:
                 step=1,
                 key="plastic_wall",
             )
-            base_shape_label = st.segmented_control(
-                "Основание силиконовой формы",
-                options=["Квадратное", "Круглое"],
-                default="Квадратное",
-                required=True,
-                width="stretch",
-                key="base_shape",
+            st.caption(
+                "Широкое квадратное основание формируется автоматически: "
+                "силиконовая форма будет устойчиво стоять на столе."
             )
             submitted = st.form_submit_button(
                 "Сгенерировать комплект",
@@ -98,7 +92,6 @@ if submitted:
         st.session_state.mold_kit = None
         result_slot.error("Сначала загрузите мастер-модель STL или 3MF.")
     else:
-        base_shape = "round" if base_shape_label == "Круглое" else "square"
         output_name = f"{uploaded_file.name.rsplit('.', 1)[0]}_mold_kit.zip"
         try:
             with result_slot.status(
@@ -106,14 +99,15 @@ if submitted:
                 expanded=True,
             ) as status:
                 status.write("Проверяем замкнутость и плоское основание")
-                status.write("Строим экономичную оболочку и устойчивую подошву")
+                status.write(
+                    "Строим экономичную оболочку и широкое квадратное основание"
+                )
                 status.write("Разделяем опалубку, добавляем фланцы и замки")
                 kit = generate_cached(
                     uploaded_file.getvalue(),
                     extension_from_name(uploaded_file.name),
                     silicone_thickness,
                     plastic_wall,
-                    base_shape,
                 )
                 status.update(
                     label="Комплект готов",
@@ -162,6 +156,6 @@ if kit is not None:
     )
 elif not submitted:
     result_slot.info(
-        "Загрузите модель, задайте две толщины и выберите форму основания. "
+        "Загрузите модель и задайте две толщины. "
         "Здесь появятся расчёт расхода и ZIP из трёх STL-файлов."
     )

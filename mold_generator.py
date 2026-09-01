@@ -25,7 +25,6 @@ class MoldKit:
     plastic_volume_ml: float
     model_size_mm: tuple[float, float, float]
     mold_size_mm: tuple[float, float, float]
-    base_shape: str
     source_faces: int
     tooling_faces: int
 
@@ -201,26 +200,43 @@ def _box(size: tuple[float, float, float], center: tuple[float, float, float]) -
     return manifold3d.Manifold.cube(size, center=True).translate(center)
 
 
-def _base_solid(
-    shape: str,
+def _stable_square_support(
     span_x: float,
     span_y: float,
-    height: float,
-    center_z: float,
-) -> tuple[manifold3d.Manifold, tuple[float, float]]:
-    if shape == "square":
-        side = max(span_x, span_y)
-        return _box((side, side, height), (0.0, 0.0, center_z)), (side, side)
-    if shape == "round":
-        radius = math.hypot(span_x, span_y) / 2.0
-        cylinder = manifold3d.Manifold.cylinder(
-            height,
-            radius,
-            circular_segments=64,
-            center=True,
-        ).translate((0.0, 0.0, center_z))
-        return cylinder, (radius * 2.0, radius * 2.0)
-    raise MoldGenerationError("Неизвестная форма основания.")
+    bottom_z: float,
+    available_height: float,
+    silicone_thickness: float,
+) -> tuple[manifold3d.Manifold, float]:
+    """Create a broad, flat silicone foot with an economical tapered shoulder."""
+    core_side = max(span_x, span_y)
+    stability_margin = max(6.0, min(15.0, silicone_thickness * 0.75))
+    foot_side = core_side + 2.0 * stability_margin
+
+    preferred_foot_height = max(8.0, min(14.0, silicone_thickness))
+    foot_height = min(preferred_foot_height, available_height * 0.30)
+    foot_height = max(4.0, foot_height)
+
+    preferred_transition_height = foot_height + max(
+        6.0,
+        min(14.0, silicone_thickness * 0.8),
+    )
+    transition_height = min(preferred_transition_height, available_height * 0.45)
+    transition_height = max(foot_height + 1.0, transition_height)
+
+    foot = _box(
+        (foot_side, foot_side, foot_height),
+        (0.0, 0.0, bottom_z + foot_height / 2.0),
+    )
+    shoulder_cap_height = 0.5
+    shoulder = _box(
+        (core_side, core_side, shoulder_cap_height),
+        (
+            0.0,
+            0.0,
+            bottom_z + transition_height - shoulder_cap_height / 2.0,
+        ),
+    )
+    return manifold3d.Manifold.batch_hull([foot, shoulder]), foot_side
 
 
 def _clip_below_top(
@@ -277,7 +293,6 @@ def generate_mold_kit(
     file_type: str,
     silicone_thickness: float,
     plastic_wall: float,
-    base_shape: str = "square",
 ) -> MoldKit:
     if not 5.0 <= silicone_thickness <= 30.0:
         raise MoldGenerationError("Толщина силикона должна быть от 5 до 30 мм.")
@@ -308,27 +323,26 @@ def generate_mold_kit(
     model_bottom = float(oriented_mesh.bounds[0, 2])
     inner_bottom = model_bottom - inner_radius
     outer_bottom = model_bottom - outer_radius
-    base_height = max(4.0, min(8.0, silicone_thickness * 0.4))
+    available_height = -inner_bottom
 
-    inner_base, base_span = _base_solid(
-        base_shape,
+    # The future silicone mold stands on this broad flat foot when the master is
+    # removed. A tapered shoulder makes the lower section cup-like without
+    # turning the entire economical conformal shell into a wasteful solid block.
+    inner_base, base_side = _stable_square_support(
         span_x,
         span_y,
-        base_height,
-        inner_bottom + base_height / 2.0,
+        inner_bottom,
+        available_height,
+        silicone_thickness,
     )
-    outer_base, outer_base_span = _base_solid(
-        base_shape,
-        base_span[0] + 2.0 * plastic_wall,
-        base_span[1] + 2.0 * plastic_wall,
-        base_height + 2.0 * plastic_wall,
-        outer_bottom + (base_height + 2.0 * plastic_wall) / 2.0,
+    outer_base = inner_base.minkowski_sum(
+        manifold3d.Manifold.sphere(plastic_wall, 16)
     )
+    outer_base_span = base_side + 2.0 * plastic_wall
 
     working_size = max(
         float(oriented_mesh.extents.max()) + 2.0 * outer_radius,
-        outer_base_span[0],
-        outer_base_span[1],
+        outer_base_span,
     ) * 2.5
     inner_raw = inner_offset + inner_base
     silicone_body = _clip_below_top(
@@ -356,7 +370,7 @@ def generate_mold_kit(
     pin_radius = min(3.5, max(2.2, plastic_wall * 0.9))
     rail_x = max(2.0 * pin_radius + 1.0, 2.0 * plastic_wall + 2.0)
     rail_depth = max(10.0, plastic_wall * 3.0)
-    rail_start = base_span[1] / 2.0 + plastic_wall * 0.5
+    rail_start = base_side / 2.0 + plastic_wall * 0.5
     rail_center_y = rail_start + rail_depth / 2.0
     rail_outer_y = rail_start + rail_depth
     rail_height = -outer_bottom
@@ -411,7 +425,7 @@ def generate_mold_kit(
     # openings on its sides. Its bottom is exactly the master model's base plane.
     pour_clearance = max(3.0, silicone_thickness * 0.5)
     desired_plank_width = max(8.0, min(18.0, float(base_size[0]) * 0.5))
-    maximum_plank_width = max(6.0, base_span[0] - 2.0 * pour_clearance)
+    maximum_plank_width = max(6.0, base_side - 2.0 * pour_clearance)
     plank_width = min(desired_plank_width, maximum_plank_width)
     plank_overhang = 4.0
     plank_length = 2.0 * (rail_outer_y + plank_overhang)
@@ -454,7 +468,6 @@ def generate_mold_kit(
         plastic_volume_ml=plastic_volume / 1_000.0,
         model_size_mm=model_size,
         mold_size_mm=mold_size,
-        base_shape=base_shape,
         source_faces=int(source_mesh.faces.shape[0]),
         tooling_faces=int(tooling_source.num_tri()),
     )

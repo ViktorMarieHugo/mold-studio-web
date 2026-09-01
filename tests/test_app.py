@@ -17,7 +17,7 @@ class StreamlitAppTests(unittest.TestCase):
         self.assertEqual(app.title[0].value, "Irivek3Dstudio")
         self.assertEqual(len(app.file_uploader), 1)
         self.assertEqual(len(app.slider), 2)
-        self.assertEqual(len(app.segmented_control), 1)
+        self.assertEqual(len(app.segmented_control), 0)
         self.assertEqual(len(app.button), 1)
 
         app.button[0].click().run()

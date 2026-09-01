@@ -40,12 +40,13 @@ class MoldGeneratorTests(unittest.TestCase):
             "stl",
             silicone_thickness=5.0,
             plastic_wall=2.0,
-            base_shape="square",
         )
 
         self.assertGreater(kit.silicone_volume_ml, 0.0)
         self.assertGreater(kit.plastic_volume_ml, 0.0)
         self.assertEqual(tuple(round(value) for value in kit.model_size_mm), (20, 16, 30))
+        self.assertAlmostEqual(kit.mold_size_mm[0], kit.mold_size_mm[1], places=4)
+        self.assertGreaterEqual(kit.mold_size_mm[0], 42.0 - 1e-4)
 
         with zipfile.ZipFile(BytesIO(kit.zip_bytes)) as archive:
             self.assertEqual(
@@ -97,16 +98,16 @@ class MoldGeneratorTests(unittest.TestCase):
                 plastic_wall=2.0,
             )
 
-    def test_generates_round_base_for_nonconvex_figurine(self) -> None:
+    def test_generates_stable_square_base_for_nonconvex_figurine(self) -> None:
         kit = generate_mold_kit(
             figurine_master_bytes("3mf"),
             "3mf",
             silicone_thickness=7.0,
             plastic_wall=3.0,
-            base_shape="round",
         )
 
-        self.assertEqual(kit.base_shape, "round")
+        self.assertAlmostEqual(kit.mold_size_mm[0], kit.mold_size_mm[1], places=4)
+        self.assertGreater(kit.mold_size_mm[0], 30.0)
         self.assertGreater(kit.silicone_volume_ml, 0.0)
         self.assertGreater(len(kit.zip_bytes), 1_000)
 
